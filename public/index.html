@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kimi Chat</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Chat navigation">
+        <div class="brand">
+          <div class="brand-mark">K</div>
+          <div>
+            <p class="brand-title">Kimi Chat</p>
+            <p class="brand-subtitle">Local test workspace</p>
+          </div>
+        </div>
+
+        <button class="new-chat" id="newChatButton" type="button">New chat</button>
+
+        <div class="history">
+          <p class="section-label">Today</p>
+          <button class="history-item active" type="button">Image and text testing</button>
+        </div>
+
+        <div class="sidebar-footer">
+          <div class="avatar">S</div>
+          <div>
+            <p class="profile-name">Shubham</p>
+            <p class="profile-plan">Kimi-K2.6</p>
+          </div>
+        </div>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="topbar">
+          <button class="icon-button mobile-menu" id="mobileMenuButton" type="button" aria-label="Toggle sidebar">
+            <span></span>
+            <span></span>
+            <span></span>
+          </button>
+          <div>
+            <h1>Kimi-K2.6</h1>
+            <p>Ask anything. Attach an image to test multimodal support.</p>
+          </div>
+        </header>
+
+        <section class="messages" id="messages" aria-live="polite">
+          <div class="welcome-card">
+            <div class="spark">*</div>
+            <h2>How can I help?</h2>
+            <p>Type a message or upload an image. Your API key stays on the local backend.</p>
+          </div>
+        </section>
+
+        <form class="composer" id="chatForm">
+          <div class="image-preview hidden" id="imagePreviewWrap">
+            <img id="imagePreview" alt="Selected upload preview" />
+            <button type="button" id="removeImageButton" aria-label="Remove uploaded image">Remove</button>
+          </div>
+
+          <div class="composer-box">
+            <label class="attach-button" for="imageInput" aria-label="Upload image">
+              <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+              +
+            </label>
+            <textarea id="promptInput" rows="1" placeholder="Message Kimi..." required></textarea>
+            <button class="send-button" id="sendButton" type="submit" aria-label="Send message">
+              <span>Send</span>
+            </button>
+          </div>
+          <p class="fine-print">Images are sent to your configured Azure OpenAI-compatible endpoint for testing.</p>
+        </form>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "name": "kimik2.6-testing",
+  "version": "1.0.0",
+  "description": "Local ChatGPT-style interface for testing Kimi-K2.6",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "openai": "^6.35.0"
+  }
+}
