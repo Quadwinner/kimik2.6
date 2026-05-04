@@ -5,7 +5,7 @@ const { OpenAI } = require("openai");
 
 const rootDir = __dirname;
 const publicDir = path.join(rootDir, "public");
-const port = Number(process.env.PORT || 3000);
+const PORT = process.env.PORT || 3000;
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -30,10 +30,36 @@ function loadEnvFile(filePath) {
 
 loadEnvFile(path.join(rootDir, ".env.local"));
 
-const client = new OpenAI({
-  baseURL: process.env.AZURE_OPENAI_ENDPOINT,
-  apiKey: process.env.AZURE_OPENAI_API_KEY,
-});
+let azureClient;
+
+function getAzureConfig() {
+  return {
+    endpoint: process.env.AZURE_OPENAI_ENDPOINT || process.env.AZURE_ENDPOINT,
+    apiKey: process.env.AZURE_OPENAI_API_KEY || process.env.AZURE_API_KEY,
+    deployment: process.env.AZURE_OPENAI_DEPLOYMENT || process.env.AZURE_DEPLOYMENT || "Kimi-K2.6",
+  };
+}
+
+function getAzureClient() {
+  const { endpoint, apiKey } = getAzureConfig();
+
+  if (!endpoint || !apiKey) {
+    return null;
+  }
+
+  if (!azureClient) {
+    azureClient = new OpenAI({
+      baseURL: endpoint,
+      apiKey,
+    });
+  }
+
+  return azureClient;
+}
+
+function getMissingAzureConfigMessage() {
+  return "Missing Azure configuration. Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY, or AZURE_ENDPOINT and AZURE_API_KEY.";
+}
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
@@ -82,7 +108,7 @@ async function getJsonPayload(req) {
 }
 
 function getDeploymentName() {
-  return process.env.AZURE_OPENAI_DEPLOYMENT || "Kimi-K2.6";
+  return getAzureConfig().deployment;
 }
 
 function buildAzureChatParams(payload, options = {}) {
@@ -230,8 +256,10 @@ function serveStatic(req, res) {
 }
 
 async function handleChat(req, res) {
-  if (!process.env.AZURE_OPENAI_ENDPOINT || !process.env.AZURE_OPENAI_API_KEY) {
-    sendJson(res, 500, { error: "Missing AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_API_KEY." });
+  const client = getAzureClient();
+
+  if (!client) {
+    sendJson(res, 500, { error: getMissingAzureConfigMessage() });
     return;
   }
 
@@ -271,6 +299,12 @@ function handleModels(req, res) {
 }
 
 async function streamOpenAICompletion(res, params) {
+  const client = getAzureClient();
+
+  if (!client) {
+    throw new Error(getMissingAzureConfigMessage());
+  }
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
@@ -294,8 +328,10 @@ async function streamOpenAICompletion(res, params) {
 }
 
 async function handleOpenAIChatCompletion(req, res) {
-  if (!process.env.AZURE_OPENAI_ENDPOINT || !process.env.AZURE_OPENAI_API_KEY) {
-    sendOpenAIError(res, 500, "Missing AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_API_KEY.");
+  const client = getAzureClient();
+
+  if (!client) {
+    sendOpenAIError(res, 500, getMissingAzureConfigMessage());
     return;
   }
 
@@ -357,6 +393,6 @@ const server = http.createServer((req, res) => {
   res.end("Method not allowed");
 });
 
-server.listen(port, () => {
-  console.log(`Chat app running at http://localhost:${port}`);
+server.listen(PORT, () => {
+  console.log("running on", PORT);
 });
