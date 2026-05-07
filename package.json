@@ -12,6 +12,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@anthropic-ai/foundry-sdk": "^0.2.3",
     "openai": "^6.35.0"
   }
 }
