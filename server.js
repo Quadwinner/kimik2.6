@@ -150,8 +150,16 @@ function getAnthropicDeploymentName() {
   return getAnthropicConfig().deployment;
 }
 
+function getAnthropicCursorModelName() {
+  return process.env.ANTHROPIC_CURSOR_MODEL || "azure-claude-opus-4-7";
+}
+
+function getAnthropicModelNames() {
+  return [...new Set([getAnthropicDeploymentName(), getAnthropicCursorModelName()])];
+}
+
 function shouldUseAnthropic(payload) {
-  return payload.model === getAnthropicDeploymentName();
+  return getAnthropicModelNames().includes(payload.model);
 }
 
 function buildAzureChatParams(payload, options = {}) {
@@ -294,9 +302,28 @@ function convertOpenAIContentToAnthropic(content) {
         return { type: "text", text: part.text || "" };
       }
 
+      if (part?.type === "image_url" && part.image_url?.url) {
+        const imageSource = convertImageUrlToAnthropicSource(part.image_url.url);
+        return imageSource ? { type: "image", source: imageSource } : null;
+      }
+
       return null;
     })
     .filter(Boolean);
+}
+
+function convertImageUrlToAnthropicSource(url) {
+  const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/i.exec(url);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    type: "base64",
+    media_type: match[1].toLowerCase(),
+    data: match[2],
+  };
 }
 
 function convertOpenAIToolsToAnthropic(tools) {
@@ -498,7 +525,7 @@ function normalizeAnthropicUsage(usage) {
   };
 }
 
-function normalizeAnthropicCompletion(message) {
+function normalizeAnthropicCompletion(message, responseModel = getAnthropicDeploymentName()) {
   const toolCalls = getAnthropicToolCalls(message);
   const openAIMessage = {
     role: "assistant",
@@ -513,7 +540,7 @@ function normalizeAnthropicCompletion(message) {
     id: message.id,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
-    model: getAnthropicDeploymentName(),
+    model: responseModel,
     choices: [
       {
         index: 0,
@@ -568,15 +595,31 @@ function serveStatic(req, res) {
 }
 
 async function handleChat(req, res) {
-  const client = getAzureClient();
-
-  if (!client) {
-    sendJson(res, 500, { error: getMissingAzureConfigMessage() });
-    return;
-  }
-
   try {
     const payload = await getJsonPayload(req);
+
+    if (shouldUseAnthropic(payload)) {
+      const params = buildAnthropicMessageParams(payload, { defaultMaxTokens: 1024 });
+      params.responseModel = payload.model || getAnthropicCursorModelName();
+      const completion = await createAnthropicCompletion(
+        params,
+        params.responseModel
+      );
+
+      sendJson(res, 200, {
+        message: completion.choices?.[0]?.message?.content || "",
+        usage: completion.usage || null,
+      });
+      return;
+    }
+
+    const client = getAzureClient();
+
+    if (!client) {
+      sendJson(res, 500, { error: getMissingAzureConfigMessage() });
+      return;
+    }
+
     const completion = normalizeChatCompletion(
       await client.chat.completions.create(
         buildAzureChatParams({ ...payload, stream: false }, { defaultMaxTokens: 1024 })
@@ -598,7 +641,7 @@ async function handleChat(req, res) {
 
 function handleModels(req, res) {
   const kimiDeployment = getDeploymentName();
-  const anthropicDeployment = getAnthropicDeploymentName();
+  const anthropicModels = getAnthropicModelNames();
 
   sendJson(res, 200, {
     object: "list",
@@ -616,11 +659,17 @@ function handleModels(req, res) {
         owned_by: "local-azure-proxy",
       },
       {
-        id: anthropicDeployment,
+        id: anthropicModels[0],
         object: "model",
         created: 0,
         owned_by: "local-anthropic-foundry-proxy",
       },
+      ...anthropicModels.slice(1).map((model) => ({
+        id: model,
+        object: "model",
+        created: 0,
+        owned_by: "local-anthropic-foundry-proxy",
+      })),
     ],
   });
 }
@@ -654,15 +703,16 @@ async function streamOpenAICompletion(res, params) {
   res.end();
 }
 
-async function createAnthropicCompletion(params) {
+async function createAnthropicCompletion(params, responseModel) {
   const client = getAnthropicClient();
 
   if (!client) {
     throw new Error(getMissingAnthropicConfigMessage());
   }
 
-  const message = await client.messages.create({ ...params, stream: false });
-  return normalizeAnthropicCompletion(message);
+  const { responseModel: _responseModel, ...anthropicParams } = params;
+  const message = await client.messages.create({ ...anthropicParams, stream: false });
+  return normalizeAnthropicCompletion(message, responseModel);
 }
 
 async function streamAnthropicCompletion(res, params) {
@@ -673,7 +723,7 @@ async function streamAnthropicCompletion(res, params) {
     "X-Accel-Buffering": "no",
   });
 
-  const completion = await createAnthropicCompletion(params);
+  const completion = await createAnthropicCompletion(params, params.responseModel);
   const choice = completion.choices[0];
 
   res.write(
@@ -702,13 +752,14 @@ async function handleOpenAIChatCompletion(req, res) {
 
     if (shouldUseAnthropic(payload)) {
       const params = buildAnthropicMessageParams(payload);
+      params.responseModel = payload.model || getAnthropicCursorModelName();
 
       if (payload.stream === true) {
         await streamAnthropicCompletion(res, params);
         return;
       }
 
-      const completion = await createAnthropicCompletion(params);
+      const completion = await createAnthropicCompletion(params, params.responseModel);
       sendJson(res, 200, completion);
       return;
     }

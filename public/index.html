@@ -41,9 +41,16 @@
             <span></span>
           </button>
           <div>
-            <h1>Kimi-K2.6</h1>
-            <p>Ask anything. Attach an image to test multimodal support.</p>
+            <h1 id="modelTitle">Kimi-K2.6</h1>
+            <p id="modelDescription">Ask anything. Attach an image to test multimodal support.</p>
           </div>
+          <label class="model-picker">
+            <span>Model</span>
+            <select id="modelSelect">
+              <option value="kimi">Kimi-K2.6</option>
+              <option value="azure-claude-opus-4-7">Claude Opus 4.7</option>
+            </select>
+          </label>
         </header>
 
         <section class="messages" id="messages" aria-live="polite">
@@ -70,7 +77,7 @@
               <span>Send</span>
             </button>
           </div>
-          <p class="fine-print">Images are sent to your configured Azure OpenAI-compatible endpoint for testing.</p>
+          <p class="fine-print">Messages are sent to your selected backend model. API keys stay on the server.</p>
         </form>
       </main>
     </div>

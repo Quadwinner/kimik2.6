@@ -9,9 +9,27 @@ const sendButton = document.querySelector("#sendButton");
 const newChatButton = document.querySelector("#newChatButton");
 const mobileMenuButton = document.querySelector("#mobileMenuButton");
 const sidebar = document.querySelector(".sidebar");
+const modelSelect = document.querySelector("#modelSelect");
+const modelTitle = document.querySelector("#modelTitle");
+const modelDescription = document.querySelector("#modelDescription");
 
 let selectedImage = null;
 let chatMessages = [];
+
+const modelDetails = {
+  kimi: {
+    title: "Kimi-K2.6",
+    assistantAvatar: "K",
+    placeholder: "Message Kimi...",
+    description: "Ask anything. Attach an image to test multimodal support.",
+  },
+  "azure-claude-opus-4-7": {
+    title: "Claude Opus 4.7",
+    assistantAvatar: "O",
+    placeholder: "Message Claude Opus...",
+    description: "Ask anything with your Azure Anthropic Foundry deployment.",
+  },
+};
 
 function scrollToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -25,12 +43,13 @@ function clearWelcome() {
 }
 
 function createMessageElement(role, text, imageDataUrl, isError = false) {
+  const currentModel = modelDetails[modelSelect.value] || modelDetails.kimi;
   const article = document.createElement("article");
   article.className = `message ${role}`;
 
   const avatar = document.createElement("div");
   avatar.className = "message-avatar";
-  avatar.textContent = role === "user" ? "S" : "K";
+  avatar.textContent = role === "user" ? "S" : currentModel.assistantAvatar;
 
   const content = document.createElement("div");
   content.className = "message-content";
@@ -73,6 +92,7 @@ function setLoading(isLoading) {
   sendButton.disabled = isLoading;
   promptInput.disabled = isLoading;
   imageInput.disabled = isLoading;
+  modelSelect.disabled = isLoading;
   sendButton.querySelector("span").textContent = isLoading ? "..." : "Send";
 }
 
@@ -119,13 +139,14 @@ function buildUserMessage(text, imageDataUrl) {
 async function sendMessage(text, imageDataUrl) {
   const userMessage = buildUserMessage(text, imageDataUrl);
   const requestMessages = [...chatMessages, userMessage];
+  const model = modelSelect.value;
 
   const response = await fetch("/api/chat", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ messages: requestMessages }),
+    body: JSON.stringify({ model, messages: requestMessages }),
   });
 
   const data = await response.json();
@@ -164,6 +185,15 @@ imageInput.addEventListener("change", async () => {
 });
 
 removeImageButton.addEventListener("click", removeSelectedImage);
+
+function updateSelectedModel() {
+  const currentModel = modelDetails[modelSelect.value] || modelDetails.kimi;
+  modelTitle.textContent = currentModel.title;
+  modelDescription.textContent = currentModel.description;
+  promptInput.placeholder = currentModel.placeholder;
+}
+
+modelSelect.addEventListener("change", updateSelectedModel);
 
 newChatButton.addEventListener("click", () => {
   chatMessages = [];
@@ -214,3 +244,5 @@ form.addEventListener("submit", async (event) => {
     promptInput.focus();
   }
 });
+
+updateSelectedModel();
