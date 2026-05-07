@@ -716,6 +716,12 @@ async function createAnthropicCompletion(params, responseModel) {
 }
 
 async function streamAnthropicCompletion(res, params) {
+  const client = getAnthropicClient();
+
+  if (!client) {
+    throw new Error(getMissingAnthropicConfigMessage());
+  }
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
@@ -723,25 +729,108 @@ async function streamAnthropicCompletion(res, params) {
     "X-Accel-Buffering": "no",
   });
 
-  const completion = await createAnthropicCompletion(params, params.responseModel);
-  const choice = completion.choices[0];
+  const responseModel = params.responseModel || getAnthropicCursorModelName();
+  const { responseModel: _responseModel, ...anthropicParams } = params;
+  const stream = await client.messages.create({ ...anthropicParams, stream: true });
+  const created = Math.floor(Date.now() / 1000);
+  const toolCallIndexes = new Map();
+  let completionId = `chatcmpl-${created}`;
+  let finishReason = null;
+  let usage = null;
 
-  res.write(
-    `data: ${JSON.stringify({
-      id: completion.id,
+  const writeChunk = (delta, chunkFinishReason = null, chunkUsage) => {
+    if (res.destroyed) return;
+
+    const chunk = {
+      id: completionId,
       object: "chat.completion.chunk",
-      created: completion.created,
-      model: completion.model,
+      created,
+      model: responseModel,
       choices: [
         {
           index: 0,
-          delta: choice.message,
-          finish_reason: choice.finish_reason,
+          delta,
+          finish_reason: chunkFinishReason,
         },
       ],
-      usage: completion.usage,
-    })}\n\n`
-  );
+    };
+
+    if (chunkUsage) {
+      chunk.usage = chunkUsage;
+    }
+
+    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+  };
+
+  for await (const event of stream) {
+    if (res.destroyed) return;
+
+    if (event.type === "message_start") {
+      completionId = event.message.id || completionId;
+      writeChunk({ role: "assistant" });
+      continue;
+    }
+
+    if (event.type === "content_block_start") {
+      const block = event.content_block;
+
+      if (block.type === "tool_use") {
+        const toolCallIndex = toolCallIndexes.size;
+        toolCallIndexes.set(event.index, toolCallIndex);
+        writeChunk({
+          tool_calls: [
+            {
+              index: toolCallIndex,
+              id: block.id,
+              type: "function",
+              function: {
+                name: block.name,
+                arguments:
+                  block.input && Object.keys(block.input).length > 0
+                    ? JSON.stringify(block.input)
+                    : "",
+              },
+            },
+          ],
+        });
+      }
+      continue;
+    }
+
+    if (event.type === "content_block_delta") {
+      if (event.delta.type === "text_delta") {
+        writeChunk({ content: event.delta.text || "" });
+        continue;
+      }
+
+      if (event.delta.type === "input_json_delta") {
+        const toolCallIndex = toolCallIndexes.get(event.index);
+
+        if (toolCallIndex !== undefined) {
+          writeChunk({
+            tool_calls: [
+              {
+                index: toolCallIndex,
+                function: {
+                  arguments: event.delta.partial_json || "",
+                },
+              },
+            ],
+          });
+        }
+      }
+      continue;
+    }
+
+    if (event.type === "message_delta") {
+      if (event.delta.stop_reason) {
+        finishReason = mapAnthropicFinishReason(event.delta.stop_reason);
+      }
+      usage = normalizeAnthropicUsage(event.usage);
+    }
+  }
+
+  writeChunk({}, finishReason || "stop", usage);
   res.write("data: [DONE]\n\n");
   res.end();
 }
