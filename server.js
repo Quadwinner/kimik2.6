@@ -326,12 +326,27 @@ function convertImageUrlToAnthropicSource(url) {
   };
 }
 
-function convertOpenAIToolsToAnthropic(tools) {
-  if (!Array.isArray(tools)) {
+function convertOpenAIToolsToAnthropic(tools, functions) {
+  const normalizedTools = [];
+
+  if (Array.isArray(tools)) {
+    normalizedTools.push(...tools);
+  }
+
+  if (Array.isArray(functions)) {
+    normalizedTools.push(
+      ...functions.map((fn) => ({
+        type: "function",
+        function: fn,
+      }))
+    );
+  }
+
+  if (normalizedTools.length === 0) {
     return undefined;
   }
 
-  const convertedTools = tools
+  const convertedTools = normalizedTools
     .filter((tool) => tool?.type === "function" && tool.function?.name)
     .map((tool) => ({
       name: tool.function.name,
@@ -345,21 +360,27 @@ function convertOpenAIToolsToAnthropic(tools) {
   return convertedTools.length > 0 ? convertedTools : undefined;
 }
 
-function convertOpenAIToolChoiceToAnthropic(toolChoice) {
-  if (!toolChoice || toolChoice === "auto") {
+function convertOpenAIToolChoiceToAnthropic(toolChoice, functionCall) {
+  const choice = toolChoice || functionCall;
+
+  if (!choice || choice === "auto") {
     return undefined;
   }
 
-  if (toolChoice === "none") {
+  if (choice === "none") {
     return { type: "none" };
   }
 
-  if (toolChoice === "required") {
+  if (choice === "required") {
     return { type: "any" };
   }
 
-  if (toolChoice?.type === "function" && toolChoice.function?.name) {
-    return { type: "tool", name: toolChoice.function.name };
+  if (choice?.type === "function" && choice.function?.name) {
+    return { type: "tool", name: choice.function.name };
+  }
+
+  if (choice?.name) {
+    return { type: "tool", name: choice.name };
   }
 
   return undefined;
@@ -458,12 +479,18 @@ function buildAnthropicMessageParams(payload, options = {}) {
     params.stop_sequences = Array.isArray(payload.stop) ? payload.stop : [payload.stop];
   }
 
-  const tools = convertOpenAIToolsToAnthropic(payload.tools);
+  const tools = convertOpenAIToolsToAnthropic(payload.tools, payload.functions);
   if (tools) {
     params.tools = tools;
+    params.system = [
+      params.system,
+      "Use the provided tools by emitting tool_use calls only. Do not write tool calls as plain text.",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
   }
 
-  const toolChoice = convertOpenAIToolChoiceToAnthropic(payload.tool_choice);
+  const toolChoice = convertOpenAIToolChoiceToAnthropic(payload.tool_choice, payload.function_call);
   if (toolChoice) {
     params.tool_choice = toolChoice;
   }
@@ -549,6 +576,114 @@ function normalizeAnthropicCompletion(message, responseModel = getAnthropicDeplo
       },
     ],
     usage: normalizeAnthropicUsage(message.usage),
+  };
+}
+
+function normalizeToolName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function findAnthropicTool(toolName, tools) {
+  if (!Array.isArray(tools)) {
+    return null;
+  }
+
+  const normalizedToolName = normalizeToolName(toolName);
+  return (
+    tools.find((tool) => normalizeToolName(tool.name) === normalizedToolName) ||
+    tools.find((tool) => normalizeToolName(tool.name).includes(normalizedToolName)) ||
+    null
+  );
+}
+
+function getSchemaProperties(tool) {
+  return tool?.input_schema?.properties && typeof tool.input_schema.properties === "object"
+    ? tool.input_schema.properties
+    : {};
+}
+
+function firstMatchingProperty(properties, candidates) {
+  const keys = Object.keys(properties);
+
+  for (const candidate of candidates) {
+    const match = keys.find((key) => normalizeToolName(key) === normalizeToolName(candidate));
+    if (match) return match;
+  }
+
+  return keys.find((key) => properties[key]?.type === "string") || keys[0];
+}
+
+function buildFallbackToolArguments(tool, rawInput) {
+  const properties = getSchemaProperties(tool);
+  const args = {};
+  const input = rawInput.trim();
+
+  if (normalizeToolName(tool.name).includes("bash")) {
+    const commandProperty = firstMatchingProperty(properties, [
+      "command",
+      "cmd",
+      "script",
+      "input",
+    ]);
+    if (commandProperty) args[commandProperty] = input;
+  } else if (normalizeToolName(tool.name).includes("read")) {
+    const pathProperty = firstMatchingProperty(properties, [
+      "path",
+      "file_path",
+      "filepath",
+      "target_file",
+      "absolute_path",
+    ]);
+    if (pathProperty) {
+      args[pathProperty] = input.replace(/^file\s+/i, "").split(/\s+offset=|\s+limit=/)[0].trim();
+    }
+
+    const offsetMatch = input.match(/\boffset\s*=\s*(-?\d+)/i);
+    const limitMatch = input.match(/\blimit\s*=\s*(\d+)/i);
+    if (offsetMatch && properties.offset) args.offset = Number(offsetMatch[1]);
+    if (limitMatch && properties.limit) args.limit = Number(limitMatch[1]);
+  }
+
+  if (Object.keys(args).length === 0) {
+    const required = Array.isArray(tool.input_schema?.required) ? tool.input_schema.required : [];
+    const fallbackProperty =
+      required.find((key) => properties[key]?.type === "string") ||
+      firstMatchingProperty(properties, ["input", "query", "text"]);
+
+    if (fallbackProperty) {
+      args[fallbackProperty] = input;
+    }
+  }
+
+  return args;
+}
+
+function parseFallbackTextToolCall(text, tools) {
+  const match = text.match(/(?:^|\n)\s*Tool call:\s*([A-Za-z0-9_-]+)([\s\S]*)/i);
+  if (!match) {
+    return null;
+  }
+
+  const tool = findAnthropicTool(match[1], tools);
+  if (!tool) {
+    return null;
+  }
+
+  const rawInput = match[2]
+    .replace(/\n\s*Tool call:[\s\S]*$/i, "")
+    .replace(/^```[a-zA-Z0-9_-]*\n?/, "")
+    .replace(/\n?```$/, "")
+    .trim();
+
+  return {
+    id: `call_${Date.now().toString(36)}`,
+    type: "function",
+    function: {
+      name: tool.name,
+      arguments: JSON.stringify(buildFallbackToolArguments(tool, rawInput)),
+    },
   };
 }
 
@@ -734,6 +869,8 @@ async function streamAnthropicCompletion(res, params) {
   const stream = await client.messages.create({ ...anthropicParams, stream: true });
   const created = Math.floor(Date.now() / 1000);
   const toolCallIndexes = new Map();
+  let bufferedText = "";
+  let hasToolCall = false;
   let completionId = `chatcmpl-${created}`;
   let finishReason = null;
   let usage = null;
@@ -775,6 +912,11 @@ async function streamAnthropicCompletion(res, params) {
       const block = event.content_block;
 
       if (block.type === "tool_use") {
+        if (bufferedText) {
+          writeChunk({ content: bufferedText });
+          bufferedText = "";
+        }
+        hasToolCall = true;
         const toolCallIndex = toolCallIndexes.size;
         toolCallIndexes.set(event.index, toolCallIndex);
         writeChunk({
@@ -799,7 +941,7 @@ async function streamAnthropicCompletion(res, params) {
 
     if (event.type === "content_block_delta") {
       if (event.delta.type === "text_delta") {
-        writeChunk({ content: event.delta.text || "" });
+        bufferedText += event.delta.text || "";
         continue;
       }
 
@@ -807,6 +949,7 @@ async function streamAnthropicCompletion(res, params) {
         const toolCallIndex = toolCallIndexes.get(event.index);
 
         if (toolCallIndex !== undefined) {
+          hasToolCall = true;
           writeChunk({
             tool_calls: [
               {
@@ -828,6 +971,29 @@ async function streamAnthropicCompletion(res, params) {
       }
       usage = normalizeAnthropicUsage(event.usage);
     }
+  }
+
+  if (bufferedText) {
+    const fallbackToolCall = hasToolCall
+      ? null
+      : parseFallbackTextToolCall(bufferedText, anthropicParams.tools);
+
+    if (fallbackToolCall) {
+      writeChunk({
+        tool_calls: [
+          {
+            index: 0,
+            ...fallbackToolCall,
+          },
+        ],
+      });
+      writeChunk({}, "tool_calls", usage);
+      res.write("data: [DONE]\n\n");
+      res.end();
+      return;
+    }
+
+    writeChunk({ content: bufferedText });
   }
 
   writeChunk({}, finishReason || "stop", usage);
