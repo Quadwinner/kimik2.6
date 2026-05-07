@@ -81,6 +81,7 @@ function getAnthropicClient() {
     anthropicClient = new AnthropicFoundry({
       apiKey,
       baseURL: endpoint,
+      resource: null,
       apiVersion,
     });
   }
@@ -598,6 +599,27 @@ function findAnthropicTool(toolName, tools) {
   );
 }
 
+function findShellTool(tools) {
+  if (!Array.isArray(tools)) {
+    return null;
+  }
+
+  return (
+    tools.find((tool) => {
+      const normalizedName = normalizeToolName(tool.name);
+      const normalizedDescription = normalizeToolName(tool.description);
+      return (
+        normalizedName.includes("bash") ||
+        normalizedName.includes("shell") ||
+        normalizedName.includes("terminal") ||
+        normalizedDescription.includes("shellcommand") ||
+        normalizedDescription.includes("terminalcommand") ||
+        normalizedDescription.includes("bashcommand")
+      );
+    }) || null
+  );
+}
+
 function getSchemaProperties(tool) {
   return tool?.input_schema?.properties && typeof tool.input_schema.properties === "object"
     ? tool.input_schema.properties
@@ -685,6 +707,48 @@ function parseFallbackTextToolCall(text, tools) {
       arguments: JSON.stringify(buildFallbackToolArguments(tool, rawInput)),
     },
   };
+}
+
+function looksLikeShellCommand(line) {
+  return (
+    /^(?:cd|grep|rg|cat|ls|sed|awk|head|tail|wc|pwd|echo|npm|pnpm|yarn|node|python3?|git|curl|npx)\b/.test(line) ||
+    /^find\s+(?:\.|\/|~|[A-Za-z0-9_./-]+)\b/.test(line)
+  );
+}
+
+function extractFallbackShellCommand(text) {
+  const cleaned = text.replace(/^```[a-zA-Z0-9_-]*\n?/, "").replace(/\n?```$/, "");
+  const lines = cleaned
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.find(looksLikeShellCommand) || null;
+}
+
+function parseFallbackShellCommand(text, tools) {
+  const tool = findShellTool(tools);
+  if (!tool) {
+    return null;
+  }
+
+  const command = extractFallbackShellCommand(text);
+  if (!command) {
+    return null;
+  }
+
+  return {
+    id: `call_${Date.now().toString(36)}`,
+    type: "function",
+    function: {
+      name: tool.name,
+      arguments: JSON.stringify(buildFallbackToolArguments(tool, command)),
+    },
+  };
+}
+
+function parseFallbackToolCall(text, tools) {
+  return parseFallbackTextToolCall(text, tools) || parseFallbackShellCommand(text, tools);
 }
 
 function getContentType(filePath) {
@@ -976,7 +1040,7 @@ async function streamAnthropicCompletion(res, params) {
   if (bufferedText) {
     const fallbackToolCall = hasToolCall
       ? null
-      : parseFallbackTextToolCall(bufferedText, anthropicParams.tools);
+      : parseFallbackToolCall(bufferedText, anthropicParams.tools);
 
     if (fallbackToolCall) {
       writeChunk({
